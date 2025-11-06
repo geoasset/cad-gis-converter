@@ -1,0 +1,82 @@
+services:
+  # Backend API
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - backend_uploads:/app/uploads
+      - backend_outputs:/app/outputs
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - cad_gis_network
+    restart: unless-stopped
+
+  # Frontend React App
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+    networks:
+      - cad_gis_network
+    restart: unless-stopped
+
+  # Redis for job queue and caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cad_gis_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  # Celery worker for background processing (optional, for production)
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A backend.main.celery worker --loglevel=info
+    volumes:
+      - .:/app
+      - backend_uploads:/app/uploads
+      - backend_outputs:/app/outputs
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - backend
+    networks:
+      - cad_gis_network
+    restart: unless-stopped
+    profiles:
+      - production
+
+volumes:
+  backend_uploads:
+  backend_outputs:
+  redis_data:
+
+networks:
+  cad_gis_network:
+    driver: bridge
