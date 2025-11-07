@@ -5,7 +5,6 @@ import MapViewer from './components/MapViewer';
 import ProgressIndicator from './components/ProgressIndicator';
 import FileUploadZone from './components/FileUploadZone';
 import ConversionOptions from './components/ConversionOptions';
-import ProjectionChanger from './components/ProjectionChanger';
 import ScaleAdjuster from './components/ScaleAdjuster';
 import GlobalMessages from './components/GlobalMessages';
 import { MessageProvider } from './contexts/MessageContext';
@@ -30,7 +29,6 @@ function App() {
   const [conversionResult, setConversionResult] = useState<FeatureCollection | null>(null);
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isReprojecting, setIsReprojecting] = useState(false);
 
   // Conversion options
   const [targetCrs, setTargetCrs] = useState('EPSG:4326');
@@ -62,7 +60,7 @@ function App() {
         setScaledPreviewData(response.data);
         // Don't update originalConversionResult for scaled jobs
       } else {
-        // This is an original conversion - store as original and reset scale state
+        // This is an original conversion or reprojection - store as original and reset scale state
         setOriginalConversionResult(response.data);
         setScaleFactor(1.0);
         setScaledPreviewData(null);
@@ -82,7 +80,6 @@ function App() {
 
         if (job.status === 'completed') {
           setIsPolling(false);
-          setIsReprojecting(false);
           setIsApplyingScale(false);
           if (pollingIntervalRef.current) {
             clearInterval(pollingIntervalRef.current);
@@ -92,7 +89,6 @@ function App() {
           await fetchConversionResult(jobId, job);
         } else if (job.status === 'failed') {
           setIsPolling(false);
-          setIsReprojecting(false);
           setIsApplyingScale(false);
           if (pollingIntervalRef.current) {
             clearInterval(pollingIntervalRef.current);
@@ -224,7 +220,6 @@ function App() {
     setScaleFactor(1.0);
     setError(null);
     setIsPolling(false);
-    setIsReprojecting(false);
     setIsApplyingScale(false);
     setIsTransformingPreview(false);
   };
@@ -396,31 +391,7 @@ function App() {
     }
   }, [currentJob]);
 
-  const handleReproject = useCallback(async (newCrs: string) => {
-    if (!currentJob?.job_id) return;
 
-    try {
-      setIsReprojecting(true);
-      setError(null);
-
-      const response = await api.post(`/api/reproject/${currentJob.job_id}`, null, {
-        params: {
-          target_crs: newCrs,
-          output_format: currentJob.output_format
-        }
-      });
-
-      const newJobId = response.data.job_id;
-      
-      // Start polling for the new job
-      setIsPolling(true);
-      pollJobStatus(newJobId);
-
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Reprojection failed');
-      setIsReprojecting(false);
-    }
-  }, [currentJob, pollJobStatus]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -500,7 +471,7 @@ function App() {
 
           {currentJob && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-12rem)]">
-              {/* Left Column - Controls (Half Width) */}
+              {/* Left Column - Controls */}
               <div className="space-y-6 overflow-y-auto">
                 <ProgressIndicator 
                   job={currentJob} 
@@ -510,77 +481,74 @@ function App() {
                 />
 
                 {conversionResult && currentJob && currentJob.status === 'completed' && (
-                  <>
-                    <ProjectionChanger
-                      currentCrs={currentJob.target_crs || targetCrs}
-                      onReproject={handleReproject}
-                      isReprojecting={isReprojecting}
-                    />
-
-                    <ScaleAdjuster
-                      jobId={currentJob.job_id}
-                      originalJobId={currentJob.parent_job_id || currentJob.job_id}
-                      filename={currentJob.filename}
-                      currentCrs={currentJob.target_crs || targetCrs}
-                      onScaleApplied={handleScaleApplied}
-                      onScalePreview={handleScalePreview}
-                      onDownloadOriginal={handleDownloadOriginal}
-                      isApplying={isApplyingScale}
-                      appliedScaleFactor={currentJob.scale_factor}
-                    />
-                  </>
+                  <ScaleAdjuster
+                    jobId={currentJob.job_id}
+                    originalJobId={currentJob.parent_job_id || currentJob.job_id}
+                    filename={currentJob.filename}
+                    currentCrs={currentJob.target_crs || targetCrs}
+                    onScaleApplied={handleScaleApplied}
+                    onScalePreview={handleScalePreview}
+                    onDownloadOriginal={handleDownloadOriginal}
+                    isApplying={isApplyingScale}
+                    appliedScaleFactor={currentJob.scale_factor}
+                  />
                 )}
               </div>
 
-              {/* Right Column - Map Preview (Always Visible) */}
-              <div className="bg-white rounded-lg shadow overflow-hidden">
-                <div className="p-4 bg-gray-50 border-b">
-                  <h3 className="text-lg font-semibold">Conversion Preview</h3>
-                  {conversionResult ? (
-                    <p className="text-sm text-gray-600">
-                      {conversionResult.features.length} features • Download: {getEpsgDisplayName(currentJob.target_crs || targetCrs)}
-                      {scaleFactor !== 1.0 && ` • Scale Factor: ${scaleFactor.toFixed(6)}`}
-                    </p>
-                  ) : (
-                    <p className="text-sm text-gray-600">
-                      {currentJob.status === 'completed' ? 'Loading preview...' : 'Processing conversion...'}
-                    </p>
-                  )}
+              {/* Right Column - Map Preview (Top) */}
+              <div className="space-y-6 overflow-y-auto">
+                {/* Map Preview */}
+                <div className="bg-white rounded-lg shadow overflow-hidden">
+                  <div className="h-[400px]">
+                    {conversionResult ? (
+                      <MapViewer 
+                        data={scaledPreviewData || conversionResult} 
+                        targetCrs={currentJob.target_crs || targetCrs}
+                        scaleFactor={scaleFactor}
+                        isTransforming={isTransformingPreview}
+                        isScaleApplied={currentJob.scale_factor !== undefined && currentJob.scale_factor !== null}
+                        appliedScaleFactor={currentJob.scale_factor}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full bg-gradient-to-br from-gray-50 to-gray-100">
+                        <div className="text-center p-8">
+                          {currentJob.status === 'processing' || currentJob.status === 'pending' ? (
+                            <>
+                              <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                              <h3 className="text-lg font-semibold text-gray-900 mb-2">Converting Your File</h3>
+                              <p className="text-gray-500 text-sm">Map preview will appear here when conversion is complete</p>
+                            </>
+                          ) : (
+                            <>
+                              <div className="text-gray-400 mb-4">
+                                <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 4m0 13V4m0 0L9 7" />
+                                </svg>
+                              </div>
+                              <h3 className="text-lg font-semibold text-gray-900 mb-2">Map Preview</h3>
+                              <p className="text-gray-500 text-sm">Your converted data will be displayed here</p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="h-[calc(100%-4rem)]">
-                  {conversionResult ? (
-                    <MapViewer 
-                      data={scaledPreviewData || conversionResult} 
-                      targetCrs={currentJob.target_crs || targetCrs}
-                      scaleFactor={scaleFactor}
-                      isTransforming={isTransformingPreview}
-                      isScaleApplied={currentJob.scale_factor !== undefined && currentJob.scale_factor !== null}
-                      appliedScaleFactor={currentJob.scale_factor}
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center h-full bg-gradient-to-br from-gray-50 to-gray-100">
-                      <div className="text-center p-8">
-                        {currentJob.status === 'processing' || currentJob.status === 'pending' ? (
-                          <>
-                            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500 mx-auto mb-4"></div>
-                            <h3 className="text-lg font-semibold text-gray-900 mb-2">Converting Your File</h3>
-                            <p className="text-gray-500 text-sm">Map preview will appear here when conversion is complete</p>
-                          </>
-                        ) : (
-                          <>
-                            <div className="text-gray-400 mb-4">
-                              <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 4m0 13V4m0 0L9 7" />
-                              </svg>
-                            </div>
-                            <h3 className="text-lg font-semibold text-gray-900 mb-2">Map Preview</h3>
-                            <p className="text-gray-500 text-sm">Your converted data will be displayed here</p>
-                          </>
-                        )}
+
+                {/* Current Projection Info */}
+                {conversionResult && currentJob && currentJob.status === 'completed' && (
+                  <div className="bg-white border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-center space-x-3">
+                      <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">Current Projection</div>
+                        <div className="text-xs text-gray-600">{getEpsgDisplayName(currentJob.target_crs || targetCrs)}</div>
                       </div>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

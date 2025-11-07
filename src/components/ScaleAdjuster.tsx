@@ -85,10 +85,10 @@ const ScaleAdjuster: React.FC<ScaleAdjusterProps> = ({
       return false;
     }
 
-    // Check for excessive precision (more than 6 decimal places)
+    // Check for excessive precision (more than 12 decimal places)
     const decimalPart = value.split('.')[1];
-    if (decimalPart && decimalPart.length > 6) {
-      setError('Scale factor precision limited to 6 decimal places');
+    if (decimalPart && decimalPart.length > 12) {
+      setError('Scale factor precision limited to 12 decimal places');
       return false;
     }
 
@@ -190,6 +190,17 @@ const ScaleAdjuster: React.FC<ScaleAdjusterProps> = ({
       setError(errorMessage);
     }
   }, [scaleFactor, jobId, validateScaleFactor, onScaleApplied, filename, showSuccessMessage]);
+
+  // Handle inverse button click (for Surface to Grid conversion)
+  const handleInverse = useCallback(() => {
+    const numValue = parseFloat(scaleFactor);
+    if (!isNaN(numValue) && numValue !== 0) {
+      const inverse = 1 / numValue;
+      const inverseStr = inverse.toFixed(12).replace(/\.?0+$/, ''); // Remove trailing zeros
+      setScaleFactor(inverseStr);
+      handleScaleChange(inverseStr);
+    }
+  }, [scaleFactor, handleScaleChange]);
 
   // Handle reset button click
   const handleReset = useCallback(async () => {
@@ -307,7 +318,7 @@ const ScaleAdjuster: React.FC<ScaleAdjusterProps> = ({
 
 
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="space-y-4">
         {/* Scale Factor Input */}
         <div className="space-y-2">
           <label htmlFor="scale-factor" className="flex items-center text-sm font-medium text-gray-700">
@@ -352,30 +363,20 @@ const ScaleAdjuster: React.FC<ScaleAdjusterProps> = ({
           )}
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-end space-x-2 scale-btn-group">
+        {/* Utility Buttons */}
+        <div className="flex items-center space-x-2">
           <button
             type="button"
-            onClick={handleApply}
-            disabled={isApplyDisabled}
-            className={`flex-1 inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white ${
-              isApplyDisabled
-                ? 'bg-gray-300 cursor-not-allowed opacity-50'
-                : 'scale-btn-primary btn-hover-lift'
-            }`}
+            onClick={handleInverse}
+            disabled={isApplying || !isValidNumber || currentScaleValue === 0}
+            className="flex-1 px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-white scale-btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="Inverse (Surface to Grid)"
+            title="Calculate inverse (1/x) for Surface to Grid conversion"
           >
             {isApplying ? (
-              <>
-                <div className="scale-loading-spinner mr-2"></div>
-                Applying...
-              </>
+              <div className="scale-loading-spinner"></div>
             ) : (
-              <>
-                <svg className="w-4 h-4 mr-2 scale-btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-                Apply Scale Factor
-              </>
+              <span className="font-semibold">1/x</span>
             )}
           </button>
 
@@ -383,16 +384,19 @@ const ScaleAdjuster: React.FC<ScaleAdjusterProps> = ({
             type="button"
             onClick={handleReset}
             disabled={isApplying}
-            className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-white scale-btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-white scale-btn-secondary disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center"
             aria-label="Reset to 1.0"
             title="Reset to original scale (1.0)"
           >
             {isApplying ? (
               <div className="scale-loading-spinner"></div>
             ) : (
-              <svg className="w-4 h-4 scale-btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
+              <>
+                <svg className="w-4 h-4 mr-1 scale-btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Reset
+              </>
             )}
           </button>
 
@@ -400,15 +404,42 @@ const ScaleAdjuster: React.FC<ScaleAdjusterProps> = ({
             type="button"
             onClick={onDownloadOriginal}
             disabled={isApplying}
-            className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-white scale-btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-white scale-btn-secondary disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center"
             title="Download"
             aria-label="Download original unscaled version"
           >
-            <svg className="w-4 h-4 scale-btn-icon" fill="currentColor" viewBox="0 0 20 20">
+            <svg className="w-4 h-4 mr-1 scale-btn-icon" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
             </svg>
+            Download
           </button>
         </div>
+
+        {/* Apply Button */}
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={isApplyDisabled}
+          className={`w-full inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white ${
+            isApplyDisabled
+              ? 'bg-gray-300 cursor-not-allowed opacity-50'
+              : 'scale-btn-primary btn-hover-lift'
+          }`}
+        >
+          {isApplying ? (
+            <>
+              <div className="scale-loading-spinner mr-2"></div>
+              Applying...
+            </>
+          ) : (
+            <>
+              <svg className="w-5 h-5 mr-2 scale-btn-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Apply Scale Factor
+            </>
+          )}
+        </button>
       </div>
 
       {/* Help Tooltip */}
