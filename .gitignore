@@ -15,6 +15,8 @@ dist/
 .env.test.local
 .env.production.local
 
+.kiro/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -93,3 +95,4 @@ mnt/
 docs/COORDINATE_CONVERSION_GUIDE.md
 docs/QUICK_START.md
 docs/STATE_PLANE_REFERENCE.md
+/docs
