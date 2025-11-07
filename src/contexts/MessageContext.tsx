@@ -32,6 +32,17 @@ export const MessageProvider: React.FC<MessageProviderProps> = ({ children }) =>
   const [messages, setMessages] = useState<Message[]>([]);
   const timeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
+  const removeMessage = useCallback((id: string) => {
+    setMessages(prev => prev.filter(msg => msg.id !== id));
+    
+    // Clear timeout if exists
+    const timeout = timeoutsRef.current.get(id);
+    if (timeout) {
+      clearTimeout(timeout);
+      timeoutsRef.current.delete(id);
+    }
+  }, []);
+
   const addMessage = useCallback((text: string, type: Message['type'], duration = 8000): string => {
     const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
@@ -54,18 +65,7 @@ export const MessageProvider: React.FC<MessageProviderProps> = ({ children }) =>
     }
 
     return id;
-  }, []);
-
-  const removeMessage = useCallback((id: string) => {
-    setMessages(prev => prev.filter(msg => msg.id !== id));
-    
-    // Clear timeout if exists
-    const timeout = timeoutsRef.current.get(id);
-    if (timeout) {
-      clearTimeout(timeout);
-      timeoutsRef.current.delete(id);
-    }
-  }, []);
+  }, [removeMessage]);
 
   const clearMessages = useCallback(() => {
     setMessages([]);
@@ -77,8 +77,10 @@ export const MessageProvider: React.FC<MessageProviderProps> = ({ children }) =>
 
   // Cleanup timeouts on unmount
   React.useEffect(() => {
+    const timeouts = timeoutsRef.current;
     return () => {
-      timeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+      timeouts.forEach(timeout => clearTimeout(timeout));
+      timeouts.clear();
     };
   }, []);
 

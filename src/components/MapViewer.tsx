@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { GeoJsonObject, FeatureCollection } from 'geojson';
-import { getEpsgDisplayName } from './crsOptions';
 import 'leaflet/dist/leaflet.css';
 
 // Fix for default markers in react-leaflet
