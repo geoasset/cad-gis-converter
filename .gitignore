@@ -90,3 +90,6 @@ outputs/*
 
 # Local data
 mnt/
+docs/COORDINATE_CONVERSION_GUIDE.md
+docs/QUICK_START.md
+docs/STATE_PLANE_REFERENCE.md

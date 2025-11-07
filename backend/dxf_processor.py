@@ -15,6 +15,112 @@ from fiona.crs import from_epsg
 
 logger = logging.getLogger(__name__)
 
+def detect_coordinate_system_type(geometries_by_layer: Dict[str, List[Dict]]) -> Dict[str, Any]:
+    """
+    Detect if coordinates are geographic (lat/long) or projected (State Plane, UTM, etc.)
+    
+    Returns:
+        Dict with detection results:
+        {
+            "type": "geographic" | "projected" | "unknown",
+            "likely_system": str,
+            "sample_coords": List[tuple],
+            "x_range": tuple,
+            "y_range": tuple,
+            "suggestion": str
+        }
+    """
+    # Collect sample coordinates from all layers
+    sample_coords = []
+    for layer_name, features in geometries_by_layer.items():
+        for feature in features[:10]:  # Sample first 10 from each layer
+            geom = feature.get('geometry')
+            if geom:
+                if hasattr(geom, 'coords'):
+                    sample_coords.extend(list(geom.coords)[:5])
+                elif hasattr(geom, 'exterior'):
+                    sample_coords.extend(list(geom.exterior.coords)[:5])
+    
+    if not sample_coords:
+        return {
+            "type": "unknown",
+            "likely_system": "unknown",
+            "sample_coords": [],
+            "x_range": (0, 0),
+            "y_range": (0, 0),
+            "suggestion": "No coordinates found to analyze"
+        }
+    
+    # Get coordinate ranges
+    x_vals = [coord[0] for coord in sample_coords]
+    y_vals = [coord[1] for coord in sample_coords]
+    x_min, x_max = min(x_vals), max(x_vals)
+    y_min, y_max = min(y_vals), max(y_vals)
+    
+    # Determine coordinate type
+    result = {
+        "sample_coords": sample_coords[:5],
+        "x_range": (x_min, x_max),
+        "y_range": (y_min, y_max)
+    }
+    
+    # Check if values are within typical lat/long ranges
+    if all(-180 <= x <= 180 for x in x_vals) and all(-90 <= y <= 90 for y in y_vals):
+        result["type"] = "geographic"
+        result["likely_system"] = "WGS84 or similar geographic CRS"
+        result["suggestion"] = "Coordinates appear to be in Latitude/Longitude format"
+    else:
+        result["type"] = "projected"
+        
+        # Analyze magnitude to suggest likely system
+        x_magnitude = max(abs(x_min), abs(x_max))
+        y_magnitude = max(abs(y_min), abs(y_max))
+        
+        # US State Plane in feet typically ranges from ~200,000 to ~20,000,000+
+        # Some zones (like Texas) can have very large Y values (10M+)
+        # State Plane feet are generally larger than meters for the same area
+        if 200000 <= x_magnitude <= 20000000 and 200000 <= y_magnitude <= 20000000:
+            # Check if values suggest feet vs meters
+            # State Plane feet: typically 500k-15M range
+            # Meters (UTM/Web Mercator): typically 100k-20M but different patterns
+            
+            # If Y is much larger than X, likely State Plane (some zones have large false northings)
+            y_to_x_ratio = y_magnitude / x_magnitude if x_magnitude > 0 else 0
+            
+            if y_to_x_ratio > 2.0 or (x_magnitude > 1000000 and y_magnitude > 1000000):
+                result["likely_system"] = "US State Plane (US Survey Feet)"
+                result["suggestion"] = (
+                    "⚠️ These coordinates appear to be in US State Plane (feet). "
+                    "Please specify the correct State Plane zone (e.g., EPSG:2227 for CA Zone 3, "
+                    "EPSG:2277 for TX Central) as the SOURCE coordinate system to convert to Lat/Long."
+                )
+            else:
+                result["likely_system"] = "Web Mercator (EPSG:3857) or UTM"
+                result["suggestion"] = (
+                    "⚠️ These coordinates appear to be in a projected system (meters). "
+                    "Common systems: Web Mercator (EPSG:3857) or UTM zones. "
+                    "Please specify the correct SOURCE coordinate system."
+                )
+        # Very large values suggest Web Mercator or specific State Plane zones
+        elif 100000 <= x_magnitude <= 30000000 and 100000 <= y_magnitude <= 30000000:
+            result["likely_system"] = "Projected system (likely State Plane feet or Web Mercator)"
+            result["suggestion"] = (
+                "⚠️ These coordinates are in a projected system. "
+                "For US projects, this is likely State Plane (US Survey Feet). "
+                "Please specify the correct State Plane zone (e.g., EPSG:2277 for TX Central) "
+                "as the SOURCE coordinate system."
+            )
+        else:
+            result["likely_system"] = "Unknown projected system"
+            result["suggestion"] = (
+                "⚠️ These coordinates are projected but the system is unclear. "
+                "Please specify the correct SOURCE coordinate system."
+            )
+    
+    logger.info(f"Coordinate detection: {result['type']} - {result['likely_system']}")
+    return result
+
+
 class DXFProcessor:
     """Handles DXF to GIS conversion using Python GIS libraries"""
     
@@ -25,7 +131,8 @@ class DXFProcessor:
         self, 
         dxf_path: str, 
         target_crs: str = "EPSG:4326",
-        output_format: str = "geojson"
+        output_format: str = "geojson",
+        source_crs: str = None
     ) -> Dict[str, Any]:
         """
         Convert DXF file to GIS format
@@ -34,13 +141,14 @@ class DXFProcessor:
             dxf_path: Path to DXF file
             target_crs: Target coordinate reference system
             output_format: Output format (geojson)
+            source_crs: Source coordinate reference system (if known)
             
         Returns:
-            GeoJSON dictionary
+            GeoJSON dictionary with coordinate_info metadata
         """
         try:
             # Log the target CRS being used
-            logger.info(f"Converting DXF with target_crs: {target_crs}")
+            logger.info(f"Converting DXF with target_crs: {target_crs}, source_crs: {source_crs}")
             
             # Read DXF file
             logger.info(f"Reading DXF file: {dxf_path}")
@@ -49,15 +157,26 @@ class DXFProcessor:
             # Extract geometries by layer
             geometries_by_layer = self._extract_geometries_by_layer(doc)
             
-            # Use target CRS as source CRS since DXF files don't contain CRS info
-            # The user must specify the correct CRS when uploading
-            source_crs = target_crs
+            # Detect coordinate characteristics
+            coord_info = self._analyze_coordinates(geometries_by_layer)
+            logger.info(f"Coordinate analysis: {coord_info}")
+            
+            # Determine source CRS
+            if source_crs:
+                # User specified source CRS
+                actual_source_crs = source_crs
+                logger.info(f"Using user-specified source CRS: {actual_source_crs}")
+            else:
+                # No source CRS specified - use target as source (legacy behavior)
+                actual_source_crs = target_crs
+                logger.warning(f"No source CRS specified, using target CRS as source: {actual_source_crs}")
             
             # Convert to GeoDataFrame
-            gdf = self._create_geodataframe(geometries_by_layer, source_crs)
+            gdf = self._create_geodataframe(geometries_by_layer, actual_source_crs)
             
             # Transform coordinates if needed
-            if source_crs != target_crs:
+            if actual_source_crs != target_crs:
+                logger.info(f"Transforming from {actual_source_crs} to {target_crs}")
                 gdf = gdf.to_crs(target_crs)
             
             # Return based on format
@@ -80,6 +199,10 @@ class DXFProcessor:
                         "name": urn_crs
                     }
                 }
+                
+                # Add coordinate analysis metadata
+                geojson_dict["coordinate_info"] = coord_info
+                
                 return geojson_dict
             else:
                 return gdf
@@ -87,6 +210,13 @@ class DXFProcessor:
         except Exception as e:
             logger.error(f"DXF conversion failed: {e}", exc_info=True)
             raise Exception(f"Failed to convert DXF: {str(e)}")
+    
+    def _analyze_coordinates(self, geometries_by_layer: Dict[str, List[Dict]]) -> Dict[str, Any]:
+        """
+        Analyze coordinates to detect their type and provide suggestions.
+        This is a wrapper around the standalone detect_coordinate_system_type function.
+        """
+        return detect_coordinate_system_type(geometries_by_layer)
     
     def _extract_geometries_by_layer(self, doc: ezdxf.document.Drawing) -> Dict[str, List[Dict]]:
         """Extract geometries organized by layer"""
