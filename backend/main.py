@@ -20,7 +20,18 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="CAD to GIS Converter", version="1.0.0")
 
 # Get allowed origins from environment or use defaults
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+if allowed_origins_env:
+    ALLOWED_ORIGINS = [origin.strip() for origin in allowed_origins_env.split(",")]
+else:
+    # Default to allowing common origins in development/production
+    ALLOWED_ORIGINS = [
+        "http://localhost:3000",
+        "https://cad-gis-converter-frontend.onrender.com",
+        "*"  # Allow all origins if not configured (remove in production)
+    ]
+
+logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
 
 # Enable CORS for frontend
 app.add_middleware(
