@@ -36,10 +36,27 @@ def detect_coordinate_system_type(geometries_by_layer: Dict[str, List[Dict]]) ->
         for feature in features[:10]:  # Sample first 10 from each layer
             geom = feature.get('geometry')
             if geom:
-                if hasattr(geom, 'coords'):
-                    sample_coords.extend(list(geom.coords)[:5])
-                elif hasattr(geom, 'exterior'):
-                    sample_coords.extend(list(geom.exterior.coords)[:5])
+                try:
+                    # Handle different geometry types
+                    if geom.geom_type == 'Polygon':
+                        sample_coords.extend(list(geom.exterior.coords)[:5])
+                    elif geom.geom_type in ['LineString', 'LinearRing']:
+                        sample_coords.extend(list(geom.coords)[:5])
+                    elif geom.geom_type == 'Point':
+                        sample_coords.append((geom.x, geom.y))
+                    elif geom.geom_type == 'MultiPolygon':
+                        for poly in geom.geoms:
+                            sample_coords.extend(list(poly.exterior.coords)[:5])
+                            if len(sample_coords) >= 50:
+                                break
+                    elif geom.geom_type == 'MultiLineString':
+                        for line in geom.geoms:
+                            sample_coords.extend(list(line.coords)[:5])
+                            if len(sample_coords) >= 50:
+                                break
+                except Exception as e:
+                    logger.warning(f"Failed to extract coordinates from {geom.geom_type}: {e}")
+                    continue
     
     if not sample_coords:
         return {
@@ -132,7 +149,8 @@ class DXFProcessor:
         dxf_path: str, 
         target_crs: str = "EPSG:4326",
         output_format: str = "geojson",
-        source_crs: str = None
+        source_crs: str = None,
+        skip_invalid: bool = True
     ) -> Dict[str, Any]:
         """
         Convert DXF file to GIS format
@@ -142,6 +160,8 @@ class DXFProcessor:
             target_crs: Target coordinate reference system
             output_format: Output format (geojson)
             source_crs: Source coordinate reference system (if known)
+            skip_invalid: If True, skip invalid features and continue conversion (default: True)
+                         If False, raise error on first invalid feature
             
         Returns:
             GeoJSON dictionary with coordinate_info metadata
@@ -155,7 +175,7 @@ class DXFProcessor:
             doc = ezdxf.readfile(dxf_path)
             
             # Extract geometries by layer
-            geometries_by_layer = self._extract_geometries_by_layer(doc)
+            geometries_by_layer = self._extract_geometries_by_layer(doc, skip_invalid=skip_invalid)
             
             # Detect coordinate characteristics
             coord_info = self._analyze_coordinates(geometries_by_layer)
@@ -218,9 +238,16 @@ class DXFProcessor:
         """
         return detect_coordinate_system_type(geometries_by_layer)
     
-    def _extract_geometries_by_layer(self, doc: ezdxf.document.Drawing) -> Dict[str, List[Dict]]:
-        """Extract geometries organized by layer"""
+    def _extract_geometries_by_layer(self, doc: ezdxf.document.Drawing, skip_invalid: bool = True) -> Dict[str, List[Dict]]:
+        """Extract geometries organized by layer
+        
+        Args:
+            doc: DXF document
+            skip_invalid: If True, skip invalid features. If False, raise error on invalid features.
+        """
         geometries_by_layer = {}
+        skipped_count = 0
+        total_count = 0
         
         # Get modelspace
         msp = doc.modelspace()
@@ -228,22 +255,36 @@ class DXFProcessor:
         for entity in msp:
             if entity.dxftype() not in self.supported_entities:
                 continue
-                
+            
+            total_count += 1
             layer_name = entity.dxf.layer or "0"  # Default layer
             
             if layer_name not in geometries_by_layer:
                 geometries_by_layer[layer_name] = []
             
-            geometry = self._entity_to_geometry(entity)
-            if geometry:
-                geometries_by_layer[layer_name].append({
-                    'geometry': geometry,
-                    'properties': {
-                        'layer': layer_name,
-                        'entity_type': entity.dxftype(),
-                        'color': getattr(entity.dxf, 'color', 256)
-                    }
-                })
+            try:
+                geometry = self._entity_to_geometry(entity)
+                if geometry:
+                    geometries_by_layer[layer_name].append({
+                        'geometry': geometry,
+                        'properties': {
+                            'layer': layer_name,
+                            'entity_type': entity.dxftype(),
+                            'color': getattr(entity.dxf, 'color', 256)
+                        }
+                    })
+                else:
+                    skipped_count += 1
+                    if not skip_invalid:
+                        raise ValueError(f"Failed to convert {entity.dxftype()} entity on layer '{layer_name}'")
+            except Exception as e:
+                skipped_count += 1
+                if not skip_invalid:
+                    raise Exception(f"Error processing {entity.dxftype()} on layer '{layer_name}': {str(e)}")
+                logger.warning(f"Skipped invalid {entity.dxftype()} on layer '{layer_name}': {str(e)}")
+        
+        if skipped_count > 0:
+            logger.info(f"Conversion summary: {total_count - skipped_count}/{total_count} features converted successfully, {skipped_count} skipped")
         
         return geometries_by_layer
     
@@ -253,12 +294,24 @@ class DXFProcessor:
             entity_type = entity.dxftype()
             
             if entity_type == 'POINT':
-                return Point(entity.dxf.location.x, entity.dxf.location.y)
+                x = entity.dxf.location.x
+                y = entity.dxf.location.y
+                # Validate coordinates
+                if x is not None and y is not None and math.isfinite(x) and math.isfinite(y):
+                    return Point(x, y)
+                else:
+                    logger.warning(f"Invalid point coordinates: ({x}, {y})")
+                    return None
             
             elif entity_type == 'LINE':
                 start = entity.dxf.start
                 end = entity.dxf.end
-                return LineString([(start.x, start.y), (end.x, end.y)])
+                # Validate coordinates
+                if all(math.isfinite(coord) for coord in [start.x, start.y, end.x, end.y]):
+                    return LineString([(start.x, start.y), (end.x, end.y)])
+                else:
+                    logger.warning(f"Invalid line coordinates: start=({start.x}, {start.y}), end=({end.x}, {end.y})")
+                    return None
             
             elif entity_type in ['POLYLINE', 'LWPOLYLINE']:
                 points = []
@@ -267,19 +320,38 @@ class DXFProcessor:
                 if entity_type == 'POLYLINE':
                     # POLYLINE - iterate through vertices
                     for vertex in entity.vertices:
-                        points.append((vertex.dxf.location.x, vertex.dxf.location.y))
+                        try:
+                            x = vertex.dxf.location.x
+                            y = vertex.dxf.location.y
+                            # Validate coordinates
+                            if x is not None and y is not None and math.isfinite(x) and math.isfinite(y):
+                                points.append((x, y))
+                            else:
+                                logger.warning(f"Invalid coordinate in POLYLINE: ({x}, {y})")
+                        except Exception as e:
+                            logger.warning(f"Failed to extract POLYLINE vertex: {e}")
+                            continue
                     is_closed = entity.is_closed
                 else:
                     # LWPOLYLINE - use get_points() method
                     try:
                         # get_points() returns a generator of tuples
-                        points = list(entity.get_points('xy'))
+                        raw_points = list(entity.get_points('xy'))
+                        # Validate each point
+                        for pt in raw_points:
+                            if len(pt) >= 2:
+                                x, y = pt[0], pt[1]
+                                if x is not None and y is not None and math.isfinite(x) and math.isfinite(y):
+                                    points.append((x, y))
+                                else:
+                                    logger.warning(f"Invalid coordinate in LWPOLYLINE: ({x}, {y})")
                         is_closed = entity.closed
                     except Exception as e:
                         logger.warning(f"Failed to get LWPOLYLINE points: {e}")
                         return None
                 
                 if len(points) < 2:
+                    logger.warning(f"Insufficient valid points for {entity_type}: {len(points)}")
                     return None
                 
                 # Check if closed and create appropriate geometry
@@ -287,22 +359,83 @@ class DXFProcessor:
                     # Ensure polygon is closed
                     if points[0] != points[-1]:
                         points.append(points[0])
-                    return Polygon(points)
+                    
+                    # Validate we have enough unique points for a polygon
+                    unique_points = list(dict.fromkeys(points[:-1]))  # Remove duplicates except closing point
+                    if len(unique_points) < 3:
+                        logger.warning(f"Insufficient unique points for polygon: {len(unique_points)}")
+                        return LineString(points)  # Fall back to LineString
+                    
+                    try:
+                        # Create polygon with extensive validation
+                        # Ensure all points are tuples of exactly 2 coordinates
+                        validated_points = []
+                        for pt in points:
+                            if isinstance(pt, (tuple, list)) and len(pt) >= 2:
+                                validated_points.append((float(pt[0]), float(pt[1])))
+                            else:
+                                logger.warning(f"Invalid point structure: {pt}")
+                                return LineString(points)
+                        
+                        # Create polygon from validated points
+                        poly = Polygon(validated_points)
+                        
+                        # Verify the polygon has proper coordinate sequences
+                        try:
+                            _ = list(poly.exterior.coords)
+                        except Exception as coord_err:
+                            logger.warning(f"Polygon coordinate sequence error: {coord_err}, falling back to LineString")
+                            return LineString(validated_points)
+                        
+                        if not poly.is_valid:
+                            logger.warning(f"Invalid polygon created, attempting to fix")
+                            try:
+                                poly = poly.buffer(0)  # Attempt to fix
+                            except Exception as fix_err:
+                                logger.warning(f"Failed to fix polygon: {fix_err}, falling back to LineString")
+                                return LineString(validated_points)
+                        
+                        if poly.is_empty:
+                            logger.warning(f"Empty polygon created, falling back to LineString")
+                            return LineString(validated_points)
+                        
+                        return poly
+                    except Exception as e:
+                        logger.warning(f"Failed to create polygon: {e}, falling back to LineString")
+                        try:
+                            return LineString(points)
+                        except Exception as ls_err:
+                            logger.error(f"Failed to create LineString fallback: {ls_err}")
+                            return None
                 else:
                     return LineString(points)
             
             elif entity_type == 'CIRCLE':
                 center = entity.dxf.center
                 radius = entity.dxf.radius
+                
+                # Validate center and radius
+                if not (math.isfinite(center.x) and math.isfinite(center.y) and math.isfinite(radius)):
+                    logger.warning(f"Invalid circle parameters: center=({center.x}, {center.y}), radius={radius}")
+                    return None
+                
+                if radius <= 0:
+                    logger.warning(f"Invalid circle radius: {radius}")
+                    return None
+                
                 # Create circle as polygon with 32 points
                 circle_points = []
-                import math
                 for i in range(33):  # 33 to close the polygon
                     angle = 2 * math.pi * i / 32
                     x = center.x + radius * math.cos(angle)
                     y = center.y + radius * math.sin(angle)
                     circle_points.append((x, y))
-                return Polygon(circle_points)
+                
+                try:
+                    return Polygon(circle_points)
+                except Exception as e:
+                    logger.warning(f"Failed to create circle polygon: {e}")
+                    return None
             
             elif entity_type == 'ARC':
                 # Simplified arc as linestring
@@ -310,6 +443,19 @@ class DXFProcessor:
                 radius = entity.dxf.radius
                 start_angle = math.radians(entity.dxf.start_angle)
                 end_angle = math.radians(entity.dxf.end_angle)
+                
+                # Validate parameters
+                if not (math.isfinite(center.x) and math.isfinite(center.y) and math.isfinite(radius)):
+                    logger.warning(f"Invalid arc parameters: center=({center.x}, {center.y}), radius={radius}")
+                    return None
+                
+                if radius <= 0:
+                    logger.warning(f"Invalid arc radius: {radius}")
+                    return None
+                
+                if not (math.isfinite(start_angle) and math.isfinite(end_angle)):
+                    logger.warning(f"Invalid arc angles: start={start_angle}, end={end_angle}")
+                    return None
                 
                 points = []
                 num_points = 16
@@ -321,7 +467,15 @@ class DXFProcessor:
                     y = center.y + radius * math.sin(angle)
                     points.append((x, y))
                 
-                return LineString(points)
+                if len(points) < 2:
+                    logger.warning(f"Insufficient points for arc: {len(points)}")
+                    return None
+                
+                try:
+                    return LineString(points)
+                except Exception as e:
+                    logger.warning(f"Failed to create arc linestring: {e}")
+                    return None
             
         except Exception as e:
             logger.warning(f"Failed to convert entity {entity_type}: {e}")
@@ -358,20 +512,73 @@ class DXFProcessor:
         """Create GeoDataFrame from extracted geometries"""
         
         all_features = []
+        invalid_count = 0
         
         for layer_name, features in geometries_by_layer.items():
             for feature in features:
-                all_features.append({
-                    'geometry': feature['geometry'],
-                    **feature['properties']
-                })
+                geom = feature['geometry']
+                
+                # Validate geometry before adding to GeoDataFrame
+                try:
+                    if geom is None or geom.is_empty:
+                        logger.warning(f"Skipping empty geometry on layer {layer_name}")
+                        invalid_count += 1
+                        continue
+                    
+                    # Check if geometry is valid
+                    if not geom.is_valid:
+                        logger.warning(f"Invalid geometry on layer {layer_name}, attempting to fix")
+                        geom = geom.buffer(0)
+                        if not geom.is_valid or geom.is_empty:
+                            logger.warning(f"Could not fix geometry on layer {layer_name}, skipping")
+                            invalid_count += 1
+                            continue
+                    
+                    # For polygons, validate the coordinate structure
+                    if geom.geom_type == 'Polygon':
+                        try:
+                            # Test if we can access coordinates
+                            _ = list(geom.exterior.coords)
+                            if len(list(geom.exterior.coords)) < 4:
+                                logger.warning(f"Polygon has insufficient coordinates on layer {layer_name}, skipping")
+                                invalid_count += 1
+                                continue
+                        except Exception as e:
+                            logger.warning(f"Polygon coordinate access failed on layer {layer_name}: {e}, skipping")
+                            invalid_count += 1
+                            continue
+                    
+                    all_features.append({
+                        'geometry': geom,
+                        **feature['properties']
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to validate geometry on layer {layer_name}: {e}, skipping")
+                    invalid_count += 1
+                    continue
+        
+        if invalid_count > 0:
+            logger.info(f"Skipped {invalid_count} invalid geometries during GeoDataFrame creation")
         
         if not all_features:
             # Return empty GeoDataFrame
+            logger.warning("No valid features to create GeoDataFrame")
             return gpd.GeoDataFrame(columns=['geometry'], crs=crs)
         
-        gdf = gpd.GeoDataFrame(all_features, crs=crs)
-        return gdf
+        try:
+            gdf = gpd.GeoDataFrame(all_features, crs=crs)
+            return gdf
+        except Exception as e:
+            logger.error(f"Failed to create GeoDataFrame: {e}")
+            # Try creating without CRS as fallback
+            try:
+                gdf = gpd.GeoDataFrame(all_features)
+                gdf.crs = crs
+                return gdf
+            except Exception as e2:
+                logger.error(f"Failed to create GeoDataFrame even without CRS: {e2}")
+                raise
     
 
     def apply_scale_to_geojson(
