@@ -3,14 +3,11 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 python-dotenv==1.0.0
 
-# Simplified GIS Libraries (no GDAL)
+# GIS Libraries
 shapely==2.0.2
+geopandas==0.14.1
 pyproj==3.6.1
 ezdxf==1.1.4
 
 # Data processing
 pandas==2.1.3
-numpy==1.25.2
-
-# Utilities
-aiofiles==23.2.1

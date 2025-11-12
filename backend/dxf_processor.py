@@ -10,8 +10,6 @@ from shapely.geometry import Point, LineString, Polygon, MultiPolygon, mapping
 from shapely import affinity
 import pyproj
 from pyproj import Transformer
-import fiona
-from fiona.crs import from_epsg
 
 logger = logging.getLogger(__name__)
 
